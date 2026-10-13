@@ -24,10 +24,21 @@ final class ClientTest extends TestCase
     {
         $dtos = (new Client(new Config()))->parse($this->fixture());
 
+        // The 2026-09-16 row has "ND" for cash assets and is skipped. Source values are in millions.
         $this->assertCount(2, $dtos);
-        $this->assertSame('2026-10-02', $dtos[0]->reportDate->format('Y-m-d'));
-        $this->assertSame(3240.5, $dtos[0]->cashAssetsBillions);
-        $this->assertSame(12480.1, $dtos[0]->totalLoansLeasesBillions);
+        $this->assertSame('2026-09-23', $dtos[0]->reportDate->format('Y-m-d'));
+        $this->assertSame(3170.0662, $dtos[0]->cashAssetsBillions);
+        $this->assertSame(4766.6719, $dtos[0]->treasuryAgencySecuritiesBillions);
+        $this->assertSame(2714.0219, $dtos[0]->mortgageBackedSecuritiesBillions);
+        $this->assertSame(14097.2916, $dtos[0]->totalLoansLeasesBillions);
+        $this->assertSame('2026-09-30', $dtos[1]->reportDate->format('Y-m-d'));
+    }
+
+    public function testMissingSeriesThrows(): void
+    {
+        $this->expectException(BalconyClientException::class);
+        $csv = "\"Multiplier:\",\"1000000\"\n\"Time Period\",\"B1048NCBA\"\n2026-09-30,1.0\n";
+        (new Client(new Config()))->parse($csv);
     }
 
     public function testFetchUsesMockedHttp(): void

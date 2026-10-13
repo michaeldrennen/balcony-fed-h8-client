@@ -14,10 +14,13 @@ use MichaelDrennen\Balcony\FedH8Client\Exceptions\BalconyClientException;
 final class Client
 {
     private const COL_DATE = 'time period';
-    private const COL_CASH = 'cash assets (billion $)';
-    private const COL_TREASURY = 'treasury and agency securities (billion $)';
-    private const COL_MBS = 'mortgage-backed securities (billion $)';
-    private const COL_LOANS = 'total loans and leases (billion $)';
+    private const ROW_MULTIPLIER = 'multiplier:';
+
+    // H.8 series codes, all commercial banks, seasonally adjusted.
+    private const SERIES_CASH = 'B1048NCBA';
+    private const SERIES_TREASURY = 'B1003NCBA';
+    private const SERIES_MBS = 'B1301NCBA';
+    private const SERIES_LOANS = 'B1020NCBA';
 
     private readonly ClientInterface $http;
 
@@ -57,8 +60,10 @@ final class Client
     }
 
     /**
-     * Parse the H.8 CSV. Metadata lines before the header are ignored. The header is located by
-     * its "Time Period" column, and column names are matched case-insensitively.
+     * Parse a Fed Data Download Program H.8 CSV (layout=seriescolumn, label=include).
+     * Metadata rows come first; the "Time Period" row names each column by series code,
+     * and the "Multiplier:" row gives each column's unit, which is converted to billions.
+     * Rows with a missing or non-numeric value (the Fed uses "ND") are skipped.
      *
      * @return FedBankBalanceSheetDTO[]
      */
@@ -67,7 +72,9 @@ final class Client
         $csv = ltrim($csv, "\xEF\xBB\xBF");
         $lines = preg_split('/\r\n|\r|\n/', $csv) ?: [];
 
+        $multipliers = [];
         $columns = null;
+        $scales = [];
         $rows = [];
 
         foreach ($lines as $line) {
@@ -75,35 +82,39 @@ final class Client
                 continue;
             }
 
-            $cells = str_getcsv($line);
+            $cells = array_map('trim', str_getcsv($line));
 
             if ($columns === null) {
-                $header = array_map(static fn (string $h): string => strtolower(trim($h)), $cells);
+                $label = strtolower($cells[0]);
 
-                if (in_array(self::COL_DATE, $header, true)) {
-                    self::assertColumns($header);
-                    $columns = array_flip($header);
+                if ($label === self::ROW_MULTIPLIER) {
+                    $multipliers = $cells;
+                } elseif ($label === self::COL_DATE) {
+                    $columns = self::locateSeries($cells);
+                    $scales = self::billionScales($columns, $multipliers);
                 }
 
                 continue;
             }
 
-            $reportDate = Client::parseDate($cells[$columns[self::COL_DATE]] ?? null);
-            $cash = Client::parseNumber($cells[$columns[self::COL_CASH]] ?? null);
-            $treasury = Client::parseNumber($cells[$columns[self::COL_TREASURY]] ?? null);
-            $mbs = Client::parseNumber($cells[$columns[self::COL_MBS]] ?? null);
-            $loans = Client::parseNumber($cells[$columns[self::COL_LOANS]] ?? null);
+            $reportDate = Client::parseDate($cells[0]);
+            $values = [];
 
-            if ($reportDate === null || $cash === null || $treasury === null || $mbs === null || $loans === null) {
+            foreach ($columns as $series => $index) {
+                $number = Client::parseNumber($cells[$index] ?? null);
+                $values[$series] = $number === null ? null : round($number * $scales[$series], 4);
+            }
+
+            if ($reportDate === null || in_array(null, $values, true)) {
                 continue;
             }
 
             $rows[] = new FedBankBalanceSheetDTO(
                 reportDate: $reportDate,
-                cashAssetsBillions: $cash,
-                treasuryAgencySecuritiesBillions: $treasury,
-                mortgageBackedSecuritiesBillions: $mbs,
-                totalLoansLeasesBillions: $loans,
+                cashAssetsBillions: $values[self::SERIES_CASH],
+                treasuryAgencySecuritiesBillions: $values[self::SERIES_TREASURY],
+                mortgageBackedSecuritiesBillions: $values[self::SERIES_MBS],
+                totalLoansLeasesBillions: $values[self::SERIES_LOANS],
             );
         }
 
@@ -116,14 +127,45 @@ final class Client
 
     /**
      * @param string[] $header
+     * @return array<string, int> series code => column index
      */
-    private static function assertColumns(array $header): void
+    private static function locateSeries(array $header): array
     {
-        foreach ([self::COL_CASH, self::COL_TREASURY, self::COL_MBS, self::COL_LOANS] as $required) {
-            if (!in_array($required, $header, true)) {
-                throw BalconyClientException::malformed(sprintf('H.8 CSV is missing column "%s".', $required));
+        $columns = [];
+
+        foreach ([self::SERIES_CASH, self::SERIES_TREASURY, self::SERIES_MBS, self::SERIES_LOANS] as $series) {
+            $index = array_search($series, $header, true);
+
+            if (!is_int($index)) {
+                throw BalconyClientException::malformed(sprintf('H.8 CSV is missing series "%s".', $series));
             }
+
+            $columns[$series] = $index;
         }
+
+        return $columns;
+    }
+
+    /**
+     * @param array<string, int> $columns
+     * @param string[] $multipliers
+     * @return array<string, float> series code => factor that converts a raw value to billions
+     */
+    private static function billionScales(array $columns, array $multipliers): array
+    {
+        $scales = [];
+
+        foreach ($columns as $series => $index) {
+            $multiplier = Client::parseNumber($multipliers[$index] ?? null);
+
+            if ($multiplier === null || $multiplier <= 0) {
+                throw BalconyClientException::malformed(sprintf('H.8 CSV has no multiplier for series "%s".', $series));
+            }
+
+            $scales[$series] = $multiplier / 1_000_000_000;
+        }
+
+        return $scales;
     }
 
     public static function parseNumber(?string $raw): ?float

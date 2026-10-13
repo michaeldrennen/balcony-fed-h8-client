@@ -8,14 +8,25 @@ PHP 8.1+ client for the Federal Reserve Board H.8 release ("Assets and Liabiliti
 use MichaelDrennen\Balcony\FedH8Client\Client;
 use MichaelDrennen\Balcony\FedH8Client\Config;
 
-$client = new Client(new Config(url: 'https://www.federalreserve.gov/datadownload/Output.aspx?rel=H8&series=YOUR_SERIES_KEY&filetype=csv'));
+$client = new Client(new Config());
 
 foreach ($client->fetchBalanceSheets() as $dto) {
     // $dto->reportDate, $dto->cashAssetsBillions, $dto->treasuryAgencySecuritiesBillions, ...
 }
 ```
 
-The default URL is the H.8 CSV download endpoint. Pass a `series=` key for the specific series you need. Rows with a missing or non-numeric value are skipped. Results are returned in file order.
+The default URL is the Fed Data Download Program package "All Commercial Banks, SA (Weekly)", last 52 weeks. Remove `lastobs=52` from the URL (pass your own `url:`) to download the full history.
+
+Fields are converted from the Fed's millions to billions and come from these H.8 series (all commercial banks, seasonally adjusted):
+
+| DTO field | Series | Description |
+|---|---|---|
+| `cashAssetsBillions` | `B1048NCBA` | Cash assets |
+| `treasuryAgencySecuritiesBillions` | `B1003NCBA` | Treasury and agency securities |
+| `mortgageBackedSecuritiesBillions` | `B1301NCBA` | Treasury and agency securities: MBS (agency MBS only) |
+| `totalLoansLeasesBillions` | `B1020NCBA` | Loans and leases in bank credit |
+
+Weeks with a missing value (`ND`) or a non-numeric value are skipped. Results are returned oldest first, in file order.
 
 ## Laravel persistence
 
@@ -38,5 +49,6 @@ Failures throw `MichaelDrennen\Balcony\FedH8Client\Exceptions\BalconyClientExcep
 
 ```
 composer install
-vendor/bin/phpunit
+vendor/bin/phpunit                      # offline unit tests
+vendor/bin/phpunit --group integration  # live download from federalreserve.gov
 ```
